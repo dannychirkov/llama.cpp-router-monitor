@@ -29,6 +29,9 @@ It is useful when you want to:
 <!-- Replace this with a real PNG screenshot before publishing -->
 ![Screenshot](./docs/screenshot.png)
 
+<!-- Inspector view -->
+![Inspector](./docs/screenshot-inspector.png)
+
 ## What It Does
 
 - Reverse-proxies requests to your `llama.cpp` server
