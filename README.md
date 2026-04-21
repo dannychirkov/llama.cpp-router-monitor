@@ -262,15 +262,10 @@ To keep it lean:
 - optional auth for shared environments
 - better comparison across models and backends
 
-## Publishing Notes
+## License
 
-Before pushing to GitHub, replace:
+MIT License.
 
-- `./docs/screenshot.png`
+You can use, modify, and distribute this project with attribution.
 
-You may also want to add:
-
-- a license
-- a changelog
-- GitHub Actions for `go test`
-- issue templates
+See [LICENSE](./LICENSE).
