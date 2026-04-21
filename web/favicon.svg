@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="llama.cpp Router Monitor favicon">
+  <rect width="64" height="64" rx="12" fill="#0b0f14"/>
+  <rect x="8" y="8" width="48" height="48" rx="10" fill="#121922" stroke="#2a3442"/>
+  <path d="M20 41V22h6l6 11 6-11h6v19h-5V30l-6 10h-2l-6-10v11z" fill="#ff9f1a"/>
+  <circle cx="49" cy="15" r="4" fill="#42d392"/>
+</svg>

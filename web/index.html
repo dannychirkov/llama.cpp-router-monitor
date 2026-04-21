@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="description" content="Monitor and inspect all traffic going through your local llama.cpp server." />
+  <title>llama.cpp Router Monitor</title>
+  <link rel="icon" type="image/svg+xml" href="/_monitor/ui/favicon.svg" />
+  <link rel="stylesheet" href="/_monitor/ui/styles.css" />
+</head>
+<body>
+  <div class="backdrop" aria-hidden="true">
+    <div class="glow glow-a"></div>
+    <div class="glow glow-b"></div>
+    <div class="grid"></div>
+  </div>
+
+  <div class="app-shell">
+    <header class="hero panel">
+      <div class="hero-copy">
+        <p class="eyebrow">llama.cpp observability</p>
+        <h1>llama.cpp Router Monitor</h1>
+        <p class="hero-text">A lightweight monitoring dashboard for local llama.cpp traffic.</p>
+      </div>
+
+      <div class="hero-side">
+        <div class="top-rail">
+          <div class="metric-mode-toggle" role="group" aria-label="Summary view">
+            <button id="btnMetricsCards" class="btn btn-secondary toggle-btn is-active" type="button">Cards</button>
+            <button id="btnMetricsStrip" class="btn btn-secondary toggle-btn" type="button">Strip</button>
+          </div>
+          <div class="refresh-cluster">
+            <div class="live-indicator" id="liveState" data-state="pending">
+              <span class="live-dot"></span>
+              <span id="liveStateText">Connecting</span>
+            </div>
+            <div class="refresh-meta">
+              <span class="refresh-label">Last update</span>
+              <strong id="lastUpdated">-</strong>
+            </div>
+            <button id="refreshNow" class="btn btn-primary" type="button">Refresh</button>
+            <label class="toggle">
+              <input id="autoRefresh" type="checkbox" checked />
+              <span>Auto</span>
+            </label>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <section class="summary-grid" id="summaryGrid">
+      <article class="metric-card panel accent-cyan">
+        <div class="metric-label">Active connections</div>
+        <div class="metric-value" id="activeConnections">0</div>
+        <div class="metric-foot">In flight</div>
+      </article>
+      <article class="metric-card panel accent-gold">
+        <div class="metric-label">Requests / hour</div>
+        <div class="metric-value" id="requestsHour">0</div>
+        <div class="metric-foot">Rolling 1h</div>
+      </article>
+      <article class="metric-card panel accent-slate">
+        <div class="metric-label">Total requests</div>
+        <div class="metric-value" id="totalRequests">0</div>
+        <div class="metric-foot">Retained window</div>
+      </article>
+      <article class="metric-card panel accent-green">
+        <div class="metric-label">Prompt / second</div>
+        <div class="metric-value" id="promptSec">0.0</div>
+        <div class="metric-foot">Rolling 1h</div>
+      </article>
+      <article class="metric-card panel accent-cyan">
+        <div class="metric-label">Total tokens</div>
+        <div class="metric-value" id="totalTokens">0</div>
+        <div class="metric-foot">Retained window</div>
+      </article>
+      <article class="metric-card panel accent-red">
+        <div class="metric-label">Average TTFT</div>
+        <div class="metric-value" id="avgTtft">0 ms</div>
+        <div class="metric-foot">First token</div>
+      </article>
+      <article class="metric-card panel accent-violet">
+        <div class="metric-label">Error rate</div>
+        <div class="metric-value" id="errorRate">0%</div>
+        <div class="metric-foot">4xx / 5xx</div>
+      </article>
+    </section>
+
+    <section class="workspace">
+      <section class="panel filter-panel">
+        <div class="panel-head compact-head">
+          <div>
+            <p class="panel-kicker">Filter requests</p>
+            <h2>Filters</h2>
+          </div>
+          <div class="head-actions">
+            <button id="btnToggleFilters" class="btn btn-secondary" type="button" aria-expanded="true">Collapse</button>
+            <button id="btnApply" class="btn btn-primary" type="button">Apply</button>
+            <button id="btnReset" class="btn btn-secondary" type="button">Reset</button>
+          </div>
+        </div>
+
+        <div class="filter-body" id="filterBody">
+        <div class="filter-grid">
+          <label class="field">
+            <span>Search</span>
+            <input id="fQuery" type="text" placeholder="id, path, model, ip, error" />
+          </label>
+          <label class="field">
+            <span>Path</span>
+            <input id="fPath" type="text" placeholder="/v1/chat/completions" />
+          </label>
+          <label class="field">
+            <span>Model</span>
+            <input id="fModel" type="text" placeholder="qwen, mistral, llama..." />
+          </label>
+          <label class="field small-field">
+            <span>Method</span>
+            <select id="fMethod">
+              <option value="">Any</option>
+              <option value="GET">GET</option>
+              <option value="POST">POST</option>
+              <option value="PUT">PUT</option>
+              <option value="PATCH">PATCH</option>
+              <option value="DELETE">DELETE</option>
+            </select>
+          </label>
+          <label class="field small-field">
+            <span>Status</span>
+            <input id="fStatus" type="number" min="100" max="599" placeholder="200" />
+          </label>
+          <label class="field small-field">
+            <span>Since, hours</span>
+            <input id="fSince" type="number" min="1" max="336" placeholder="24" />
+          </label>
+          <label class="field small-field">
+            <span>Stream</span>
+            <select id="fStream">
+              <option value="">Any</option>
+              <option value="true">Streaming</option>
+              <option value="false">Non-streaming</option>
+            </select>
+          </label>
+          <label class="field field-checkbox">
+            <span>Only failures</span>
+            <input id="fErrorsOnly" type="checkbox" />
+          </label>
+          <label class="field field-checkbox">
+            <span>With tokens</span>
+            <input id="fWithTokens" type="checkbox" />
+          </label>
+        </div>
+
+        </div>
+        <div class="filter-tags filter-tags-persistent" id="activeFilters"></div>
+      </section>
+
+      <section class="panel table-panel">
+        <div class="panel-head">
+          <div>
+            <p class="panel-kicker">Live request stream</p>
+            <h2>Request Tape</h2>
+          </div>
+          <div class="table-meta">
+            <span class="meta-chip"><strong id="resultsCount">0</strong> rows</span>
+            <span class="meta-chip">Select row for detail</span>
+          </div>
+        </div>
+
+        <div class="table-scroll">
+          <table>
+            <colgroup>
+              <col class="col-time" />
+              <col class="col-request" />
+              <col class="col-status" />
+              <col class="col-model" />
+              <col class="col-latency" />
+              <col class="col-latency" />
+              <col class="col-token" />
+              <col class="col-token" />
+              <col class="col-token" />
+              <col class="col-rate" />
+              <col class="col-traffic" />
+            </colgroup>
+            <thead>
+              <tr>
+                <th class="align-left">Time</th>
+                <th class="align-left">Request</th>
+                <th class="align-center">Status</th>
+                <th class="align-left">Model</th>
+                <th class="align-right">TTFT</th>
+                <th class="align-right">Total</th>
+                <th class="align-right">Prompt</th>
+                <th class="align-right">Completion</th>
+                <th class="align-right">Total tok</th>
+                <th class="align-right">Prompt/s</th>
+                <th class="align-right">Traffic</th>
+              </tr>
+            </thead>
+            <tbody id="requestsBody"></tbody>
+          </table>
+        </div>
+
+        <div id="emptyState" class="empty-state" hidden>
+          <h3>No requests match the current filter</h3>
+          <p>Reset filters or wait for new traffic to arrive through the proxy.</p>
+        </div>
+      </section>
+    </section>
+  </div>
+
+  <div class="drawer-overlay" id="drawerOverlay" hidden></div>
+  <aside class="inspector panel" id="drawer" aria-hidden="true">
+        <div class="panel-head inspector-head">
+          <div>
+            <p class="panel-kicker">Request inspector</p>
+            <h2 id="drawerTitle">No selection</h2>
+          </div>
+          <button id="drawerClose" class="btn btn-secondary" type="button">Close</button>
+        </div>
+
+        <section class="detail-hero panel">
+          <div class="detail-hero-top">
+            <div class="detail-model-wrap">
+              <div class="detail-model-label">Model</div>
+              <div class="detail-model-name" id="detailModel">-</div>
+            </div>
+            <div class="detail-badges">
+              <span class="status-badge status-live" id="detailStatusBadge">-</span>
+              <span class="detail-chip" id="detailStreamChip">-</span>
+            </div>
+          </div>
+          <div class="inspector-summary" id="drawerMeta">Choose a row to inspect request metadata and raw payloads.</div>
+        </section>
+
+        <div class="stat-strip" id="drawerStats">
+          <div class="mini-stat"><span>Status</span><strong id="detailStatus">-</strong></div>
+          <div class="mini-stat"><span>TTFT</span><strong id="detailTtft">-</strong></div>
+          <div class="mini-stat"><span>Total</span><strong id="detailTotal">-</strong></div>
+          <div class="mini-stat"><span>Prompt/s</span><strong id="detailPromptRate">-</strong></div>
+          <div class="mini-stat"><span>Output/s</span><strong id="detailDecodeRate">-</strong></div>
+          <div class="mini-stat mini-stat-cyan"><span>Prompt tok</span><strong id="detailPromptTokens">-</strong></div>
+          <div class="mini-stat mini-stat-gold"><span>Output tok</span><strong id="detailCompletionTokens">-</strong></div>
+          <div class="mini-stat mini-stat-green"><span>Total tok</span><strong id="detailTotalTokens">-</strong></div>
+          <div class="mini-stat mini-stat-violet"><span>Request</span><strong id="detailRequestBytes">-</strong></div>
+          <div class="mini-stat mini-stat-slate"><span>Response</span><strong id="detailResponseBytes">-</strong></div>
+        </div>
+
+        <section class="detail-grid panel">
+          <div class="detail-row"><span>Request ID</span><strong id="detailId">-</strong></div>
+          <div class="detail-row"><span>Backend</span><strong id="detailBackend">-</strong></div>
+          <div class="detail-row"><span>Client</span><strong id="detailClient">-</strong></div>
+          <div class="detail-row"><span>Date / Time</span><strong id="detailTime">-</strong></div>
+          <div class="detail-row"><span>Path</span><strong id="detailPath">-</strong></div>
+          <div class="detail-row"><span>Query</span><strong id="detailQuery">-</strong></div>
+          <div class="detail-row detail-row-wide" id="detailErrorRow" hidden><span>Error</span><strong id="detailError">-</strong></div>
+        </section>
+
+        <div class="tabbar">
+          <button data-tab="request" class="tab active" type="button">Raw request</button>
+          <button data-tab="structured" class="tab" type="button">Structured response</button>
+          <button data-tab="response" class="tab" type="button">Raw response</button>
+        </div>
+
+        <pre id="rawRequest" class="raw active">No request selected.</pre>
+        <pre id="structuredResponse" class="raw">No request selected.</pre>
+        <pre id="rawResponse" class="raw">No request selected.</pre>
+
+        <div class="inspector-footer">
+          <button id="drawerDelete" class="btn btn-danger" type="button" disabled>Delete Request</button>
+        </div>
+  </aside>
+
+  <script src="/_monitor/ui/app.js"></script>
+</body>
+</html>

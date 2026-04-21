@@ -1,0 +1,4 @@
+# ignore runtime data
+/data/
+*.log
+.env

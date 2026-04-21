@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-label="Screenshot placeholder">
+  <rect width="1600" height="900" fill="#0a0d12"/>
+  <rect x="36" y="36" width="1528" height="828" rx="10" fill="#0f141b" stroke="#283241"/>
+  <rect x="72" y="72" width="1456" height="84" rx="6" fill="#121922" stroke="#283241"/>
+  <rect x="72" y="182" width="1456" height="112" rx="6" fill="#10161e" stroke="#283241"/>
+  <rect x="72" y="320" width="1456" height="472" rx="6" fill="#0d131a" stroke="#283241"/>
+  <rect x="96" y="96" width="280" height="16" rx="3" fill="#ff9f1a" opacity="0.9"/>
+  <rect x="96" y="122" width="420" height="10" rx="3" fill="#7d8b9c" opacity="0.55"/>
+  <g fill="#16202b" stroke="#2b3645">
+    <rect x="96" y="206" width="196" height="64" rx="4"/>
+    <rect x="316" y="206" width="196" height="64" rx="4"/>
+    <rect x="536" y="206" width="196" height="64" rx="4"/>
+    <rect x="756" y="206" width="196" height="64" rx="4"/>
+    <rect x="976" y="206" width="196" height="64" rx="4"/>
+    <rect x="1196" y="206" width="196" height="64" rx="4"/>
+  </g>
+  <g fill="#1a2430">
+    <rect x="96" y="344" width="1430" height="28" rx="3"/>
+    <rect x="96" y="392" width="1430" height="1"/>
+    <rect x="96" y="446" width="1430" height="1"/>
+    <rect x="96" y="500" width="1430" height="1"/>
+    <rect x="96" y="554" width="1430" height="1"/>
+    <rect x="96" y="608" width="1430" height="1"/>
+    <rect x="96" y="662" width="1430" height="1"/>
+    <rect x="96" y="716" width="1430" height="1"/>
+  </g>
+  <g fill="#6f7e90" font-family="Segoe UI, Arial, sans-serif" font-size="28">
+    <text x="800" y="432" text-anchor="middle">Replace this placeholder with a real UI screenshot</text>
+  </g>
+  <g fill="#96a3b3" font-family="Consolas, monospace" font-size="20">
+    <text x="800" y="472" text-anchor="middle">llama.cpp Router Monitor</text>
+  </g>
+</svg>

@@ -1,0 +1,11 @@
+data/
+.env
+
+# Go
+bin/
+dist/
+coverage.out
+
+# OS / editor
+.DS_Store
+Thumbs.db
