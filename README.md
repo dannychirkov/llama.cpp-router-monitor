@@ -1,5 +1,11 @@
 # llama.cpp Router Monitor
 
+[![Go](https://img.shields.io/badge/Go-1.24-00ADD8?logo=go&logoColor=white)](https://go.dev/)
+[![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
+[![SQLite](https://img.shields.io/badge/SQLite-local-003B57?logo=sqlite&logoColor=white)](https://www.sqlite.org/)
+[![llama.cpp](https://img.shields.io/badge/llama.cpp-local%20LLM-111111)](https://github.com/ggml-org/llama.cpp)
+[![Streaming](https://img.shields.io/badge/SSE-streaming-1f6feb)](#what-it-does)
+
 Monitor and inspect all traffic going through your local `llama.cpp` server.
 
 Lightweight reverse proxy and monitoring UI for `llama.cpp` and OpenAI-compatible local inference servers.
