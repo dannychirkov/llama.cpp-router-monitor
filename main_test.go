@@ -50,6 +50,25 @@ func TestParseResponseMetaSSE(t *testing.T) {
 	}
 }
 
+func TestParseResponseMetaSSEKeepsLaterPromptTokens(t *testing.T) {
+	body := []byte(strings.Join([]string{
+		`data: {"model":"stream-model","timings":{"prompt_n":0,"predicted_n":0}}`,
+		`data: {"timings":{"prompt_n":19,"predicted_n":712,"prompt_ms":42,"predicted_ms":1337}}`,
+		`data: [DONE]`,
+		"",
+	}, "\n"))
+	meta := parseResponseMeta(http.Header{"Content-Type": []string{"text/event-stream"}}, body)
+	if meta.Model != "stream-model" {
+		t.Fatalf("model=%q", meta.Model)
+	}
+	if meta.PromptTokens != 19 || meta.CompletionTok != 712 || meta.TotalTokens != 731 {
+		t.Fatalf("unexpected tokens: %+v", meta)
+	}
+	if meta.PromptMs != 42 || meta.CompletionMs != 1337 {
+		t.Fatalf("unexpected timings: %+v", meta)
+	}
+}
+
 func TestParseResponseMetaLlamaCppFallbackFields(t *testing.T) {
 	body := []byte(`{
 		"model":"llama-fallback",

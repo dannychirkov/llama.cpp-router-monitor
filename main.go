@@ -682,8 +682,7 @@ func parseResponseMeta(headers http.Header, body []byte) responseMeta {
 	ct := headers.Get("Content-Type")
 	mediatype, _, _ := mime.ParseMediaType(ct)
 	if strings.Contains(mediatype, "json") {
-		parseJSONResponseMeta(body, &meta)
-		return meta
+		return parseJSONResponseMeta(body)
 	}
 	if strings.Contains(mediatype, "text/event-stream") {
 		parseSSEResponseMeta(body, &meta)
@@ -691,10 +690,11 @@ func parseResponseMeta(headers http.Header, body []byte) responseMeta {
 	return meta
 }
 
-func parseJSONResponseMeta(body []byte, meta *responseMeta) {
+func parseJSONResponseMeta(body []byte) responseMeta {
+	var meta responseMeta
 	var m map[string]any
 	if err := json.Unmarshal(body, &m); err != nil {
-		return
+		return meta
 	}
 	if v, ok := m["model"].(string); ok {
 		meta.Model = v
@@ -730,6 +730,28 @@ func parseJSONResponseMeta(body []byte, meta *responseMeta) {
 	if meta.CompletionMs == 0 {
 		meta.CompletionMs = toFloat64(m["tokens_predicted_ms"])
 	}
+	return meta
+}
+
+func mergeResponseMeta(dst *responseMeta, src responseMeta) {
+	if src.Model != "" {
+		dst.Model = src.Model
+	}
+	if src.PromptTokens > 0 {
+		dst.PromptTokens = src.PromptTokens
+	}
+	if src.CompletionTok > 0 {
+		dst.CompletionTok = src.CompletionTok
+	}
+	if src.TotalTokens > 0 {
+		dst.TotalTokens = src.TotalTokens
+	}
+	if src.PromptMs > 0 {
+		dst.PromptMs = src.PromptMs
+	}
+	if src.CompletionMs > 0 {
+		dst.CompletionMs = src.CompletionMs
+	}
 }
 
 func parseSSEResponseMeta(body []byte, meta *responseMeta) {
@@ -743,10 +765,11 @@ func parseSSEResponseMeta(body []byte, meta *responseMeta) {
 		if payload == "" || payload == "[DONE]" {
 			continue
 		}
-		parseJSONResponseMeta([]byte(payload), meta)
-		if meta.Model != "" && meta.TotalTokens > 0 {
-			return
-		}
+		chunkMeta := parseJSONResponseMeta([]byte(payload))
+		mergeResponseMeta(meta, chunkMeta)
+	}
+	if meta.TotalTokens == 0 {
+		meta.TotalTokens = meta.PromptTokens + meta.CompletionTok
 	}
 }
 
