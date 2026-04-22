@@ -40,9 +40,13 @@
               <strong id="lastUpdated">-</strong>
             </div>
             <button id="refreshNow" class="btn btn-primary" type="button">Refresh</button>
-            <label class="toggle">
+            <label class="toggle toggle-icon" title="Auto refresh" aria-label="Auto refresh">
               <input id="autoRefresh" type="checkbox" checked />
-              <span>Auto</span>
+              <span class="toggle-icon-mark" aria-hidden="true">
+                <svg viewBox="0 0 16 16" width="14" height="14" role="img" focusable="false">
+                  <path d="M8 3a5 5 0 0 1 4.58 2.98l1.06-.62V8h-2.64l.97-.57A4 4 0 1 0 8 12h.5v1.5H8a5.5 5.5 0 1 1 0-11Z" fill="currentColor"/>
+                </svg>
+              </span>
             </label>
           </div>
         </div>
@@ -66,9 +70,9 @@
         <div class="metric-foot">Retained window</div>
       </article>
       <article class="metric-card panel accent-green">
-        <div class="metric-label">Prompt / second</div>
-        <div class="metric-value" id="promptSec">0.0</div>
-        <div class="metric-foot">Rolling 1h</div>
+        <div class="metric-label">Output / second</div>
+        <div class="metric-value" id="outputSec">0.0</div>
+        <div class="metric-foot">Shown rows</div>
       </article>
       <article class="metric-card panel accent-cyan">
         <div class="metric-label">Total tokens</div>
@@ -142,14 +146,20 @@
               <option value="false">Non-streaming</option>
             </select>
           </label>
-          <label class="field field-checkbox">
-            <span>Only failures</span>
-            <input id="fErrorsOnly" type="checkbox" />
-          </label>
-          <label class="field field-checkbox">
-            <span>With tokens</span>
-            <input id="fWithTokens" type="checkbox" />
-          </label>
+          <div class="quick-filters">
+            <label class="field field-checkbox">
+              <span>Only failures</span>
+              <input id="fErrorsOnly" type="checkbox" />
+            </label>
+            <label class="field field-checkbox">
+              <span>With tokens</span>
+              <input id="fWithTokens" type="checkbox" />
+            </label>
+            <label class="field field-checkbox">
+              <span>Chat completions only</span>
+              <input id="fChatCompletions" type="checkbox" />
+            </label>
+          </div>
         </div>
 
         </div>
@@ -180,8 +190,8 @@
               <col class="col-token" />
               <col class="col-token" />
               <col class="col-token" />
+              <col class="col-cache" />
               <col class="col-rate" />
-              <col class="col-traffic" />
             </colgroup>
             <thead>
               <tr>
@@ -194,8 +204,8 @@
                 <th class="align-right">Prompt</th>
                 <th class="align-right">Completion</th>
                 <th class="align-right">Total tok</th>
+                <th class="align-right">Cache</th>
                 <th class="align-right">Prompt/s</th>
-                <th class="align-right">Traffic</th>
               </tr>
             </thead>
             <tbody id="requestsBody"></tbody>
@@ -241,6 +251,8 @@
           <div class="mini-stat"><span>Prompt/s</span><strong id="detailPromptRate">-</strong></div>
           <div class="mini-stat"><span>Output/s</span><strong id="detailDecodeRate">-</strong></div>
           <div class="mini-stat mini-stat-cyan"><span>Prompt tok</span><strong id="detailPromptTokens">-</strong></div>
+          <div class="mini-stat mini-stat-slate"><span>Cached tok</span><strong id="detailCachedPromptTokens">-</strong></div>
+          <div class="mini-stat mini-stat-gold"><span>Cache hit</span><strong id="detailCacheHitPct">-</strong></div>
           <div class="mini-stat mini-stat-gold"><span>Output tok</span><strong id="detailCompletionTokens">-</strong></div>
           <div class="mini-stat mini-stat-green"><span>Total tok</span><strong id="detailTotalTokens">-</strong></div>
           <div class="mini-stat mini-stat-violet"><span>Request</span><strong id="detailRequestBytes">-</strong></div>

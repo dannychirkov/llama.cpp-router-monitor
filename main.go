@@ -64,45 +64,48 @@ type Server struct {
 }
 
 type RequestRecord struct {
-	ID               string    `json:"id"`
-	CreatedAt        time.Time `json:"created_at"`
-	Method           string    `json:"method"`
-	Path             string    `json:"path"`
-	Query            string    `json:"query"`
-	ClientIP         string    `json:"client_ip"`
-	BackendURL       string    `json:"backend_url"`
-	Model            string    `json:"model"`
-	IsStreaming      bool      `json:"is_streaming"`
-	StatusCode       int       `json:"status_code"`
-	ErrorText        string    `json:"error_text"`
-	RequestBytes     int64     `json:"request_bytes"`
-	ResponseBytes    int64     `json:"response_bytes"`
-	PromptTokens     int64     `json:"prompt_tokens"`
-	CompletionTokens int64     `json:"completion_tokens"`
-	TotalTokens      int64     `json:"total_tokens"`
-	PromptMs         float64   `json:"prompt_ms"`
-	CompletionMs     float64   `json:"completion_ms"`
-	TotalMs          float64   `json:"total_ms"`
-	FirstByteMs      float64   `json:"first_byte_ms"`
-	ChunksCount      int64     `json:"chunks_count"`
-	RequestRawPath   string    `json:"request_raw_path"`
-	ResponseRawPath  string    `json:"response_raw_path"`
-	UserAgent        string    `json:"user_agent"`
-	PromptTokPerSec  float64   `json:"prompt_tok_per_sec"`
-	DecodeTokPerSec  float64   `json:"decode_tok_per_sec"`
-	TotalTokPerSec   float64   `json:"total_tok_per_sec"`
+	ID                 string    `json:"id"`
+	CreatedAt          time.Time `json:"created_at"`
+	Method             string    `json:"method"`
+	Path               string    `json:"path"`
+	Query              string    `json:"query"`
+	ClientIP           string    `json:"client_ip"`
+	BackendURL         string    `json:"backend_url"`
+	Model              string    `json:"model"`
+	IsStreaming        bool      `json:"is_streaming"`
+	StatusCode         int       `json:"status_code"`
+	ErrorText          string    `json:"error_text"`
+	RequestBytes       int64     `json:"request_bytes"`
+	ResponseBytes      int64     `json:"response_bytes"`
+	PromptTokens       int64     `json:"prompt_tokens"`
+	CachedPromptTokens int64     `json:"cached_prompt_tokens"`
+	CacheHitPct        float64   `json:"cache_hit_pct"`
+	CompletionTokens   int64     `json:"completion_tokens"`
+	TotalTokens        int64     `json:"total_tokens"`
+	PromptMs           float64   `json:"prompt_ms"`
+	CompletionMs       float64   `json:"completion_ms"`
+	TotalMs            float64   `json:"total_ms"`
+	FirstByteMs        float64   `json:"first_byte_ms"`
+	ChunksCount        int64     `json:"chunks_count"`
+	RequestRawPath     string    `json:"request_raw_path"`
+	ResponseRawPath    string    `json:"response_raw_path"`
+	UserAgent          string    `json:"user_agent"`
+	PromptTokPerSec    float64   `json:"prompt_tok_per_sec"`
+	DecodeTokPerSec    float64   `json:"decode_tok_per_sec"`
+	TotalTokPerSec     float64   `json:"total_tok_per_sec"`
 }
 
 type RequestFilter struct {
-	Path       string
-	Model      string
-	Method     string
-	Search     string
-	StatusCode int
-	SinceHours int
-	Streaming  *bool
-	ErrorsOnly bool
-	WithTokens bool
+	Path                string
+	Model               string
+	Method              string
+	Search              string
+	StatusCode          int
+	SinceHours          int
+	Streaming           *bool
+	ErrorsOnly          bool
+	WithTokens          bool
+	ChatCompletionsOnly bool
 }
 
 type EventHub struct {
@@ -170,6 +173,9 @@ func main() {
 	}
 	if err := normalizeDB(db); err != nil {
 		log.Fatalf("normalize db: %v", err)
+	}
+	if err := repairStuckRequests(db, cfg.DataDir); err != nil {
+		log.Printf("repair stuck requests failed: %v", err)
 	}
 
 	transport := &http.Transport{
@@ -307,14 +313,15 @@ func (s *Server) handleMonitor(w http.ResponseWriter, r *http.Request) {
 
 func parseRequestFilter(r *http.Request) RequestFilter {
 	f := RequestFilter{
-		Path:       strings.TrimSpace(r.URL.Query().Get("path")),
-		Model:      strings.TrimSpace(r.URL.Query().Get("model")),
-		Method:     strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("method"))),
-		Search:     strings.TrimSpace(r.URL.Query().Get("q")),
-		StatusCode: getQueryInt(r, "status", 0),
-		SinceHours: getQueryInt(r, "since_hours", 0),
-		ErrorsOnly: getQueryBool(r, "errors_only", false),
-		WithTokens: getQueryBool(r, "with_tokens", false),
+		Path:                strings.TrimSpace(r.URL.Query().Get("path")),
+		Model:               strings.TrimSpace(r.URL.Query().Get("model")),
+		Method:              strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("method"))),
+		Search:              strings.TrimSpace(r.URL.Query().Get("q")),
+		StatusCode:          getQueryInt(r, "status", 0),
+		SinceHours:          getQueryInt(r, "since_hours", 0),
+		ErrorsOnly:          getQueryBool(r, "errors_only", false),
+		WithTokens:          getQueryBool(r, "with_tokens", false),
+		ChatCompletionsOnly: getQueryBool(r, "chat_completions_only", false),
 	}
 	if stream, ok := getOptionalQueryBool(r, "stream"); ok {
 		f.Streaming = &stream
@@ -533,42 +540,50 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	if meta.Model != "" {
 		finalModel = meta.Model
 	}
+	cacheHitPct := 0.0
+	if meta.PromptTokens > 0 && meta.CachedPromptTokens > 0 {
+		cacheHitPct = float64(meta.CachedPromptTokens) / float64(meta.PromptTokens) * 100
+	}
 	totalMs := float64(time.Since(started).Milliseconds())
 
 	if err := s.finishRequest(requestID, RequestRecord{
-		Model:            finalModel,
-		StatusCode:       resp.StatusCode,
-		ResponseBytes:    copied,
-		PromptTokens:     meta.PromptTokens,
-		CompletionTokens: meta.CompletionTok,
-		TotalTokens:      meta.TotalTokens,
-		PromptMs:         meta.PromptMs,
-		CompletionMs:     meta.CompletionMs,
-		TotalMs:          totalMs,
-		FirstByteMs:      firstByteMs,
-		ChunksCount:      chunks,
-		ResponseRawPath:  respRawPath,
+		Model:              finalModel,
+		StatusCode:         resp.StatusCode,
+		ResponseBytes:      copied,
+		PromptTokens:       meta.PromptTokens,
+		CachedPromptTokens: meta.CachedPromptTokens,
+		CacheHitPct:        cacheHitPct,
+		CompletionTokens:   meta.CompletionTok,
+		TotalTokens:        meta.TotalTokens,
+		PromptMs:           meta.PromptMs,
+		CompletionMs:       meta.CompletionMs,
+		TotalMs:            totalMs,
+		FirstByteMs:        firstByteMs,
+		ChunksCount:        chunks,
+		ResponseRawPath:    respRawPath,
 	}); err != nil {
 		log.Printf("finish request failed: %v", err)
 	}
 
 	s.hub.Broadcast(map[string]any{
-		"kind":               "request",
-		"id":                 requestID,
-		"time":               time.Now().UTC(),
-		"path":               r.URL.Path,
-		"method":             r.Method,
-		"status_code":        resp.StatusCode,
-		"total_ms":           totalMs,
-		"first_byte_ms":      firstByteMs,
-		"prompt_tokens":      meta.PromptTokens,
-		"completion_tokens":  meta.CompletionTok,
-		"total_tokens":       meta.TotalTokens,
-		"model":              finalModel,
-		"response_bytes":     copied,
-		"chunks_count":       chunks,
-		"backend_url":        backendURL,
-		"active_connections": s.active.Load(),
+		"kind":                 "request",
+		"id":                   requestID,
+		"time":                 time.Now().UTC(),
+		"path":                 r.URL.Path,
+		"method":               r.Method,
+		"status_code":          resp.StatusCode,
+		"total_ms":             totalMs,
+		"first_byte_ms":        firstByteMs,
+		"prompt_tokens":        meta.PromptTokens,
+		"cached_prompt_tokens": meta.CachedPromptTokens,
+		"cache_hit_pct":        cacheHitPct,
+		"completion_tokens":    meta.CompletionTok,
+		"total_tokens":         meta.TotalTokens,
+		"model":                finalModel,
+		"response_bytes":       copied,
+		"chunks_count":         chunks,
+		"backend_url":          backendURL,
+		"active_connections":   s.active.Load(),
 	})
 }
 
@@ -598,12 +613,13 @@ func isStreamingResponse(resp *http.Response, reqStreaming bool) bool {
 }
 
 type responseMeta struct {
-	Model        string
-	PromptTokens int64
-	CompletionTok int64
-	TotalTokens  int64
-	PromptMs     float64
-	CompletionMs float64
+	Model              string
+	PromptTokens       int64
+	CachedPromptTokens int64
+	CompletionTok      int64
+	TotalTokens        int64
+	PromptMs           float64
+	CompletionMs       float64
 }
 
 func streamCopy(w http.ResponseWriter, src io.Reader, capture *limitedBuffer, started time.Time) (copied int64, firstByteMs float64, err error) {
@@ -704,6 +720,9 @@ func parseJSONResponseMeta(body []byte) responseMeta {
 		meta.PromptTokens = toInt64(usage["prompt_tokens"])
 		meta.CompletionTok = toInt64(usage["completion_tokens"])
 		meta.TotalTokens = toInt64(usage["total_tokens"])
+		if details, ok := usage["prompt_tokens_details"].(map[string]any); ok {
+			meta.CachedPromptTokens = toInt64(details["cached_tokens"])
+		}
 	}
 	if timings, ok := m["timings"].(map[string]any); ok {
 		if meta.PromptTokens == 0 {
@@ -739,6 +758,9 @@ func mergeResponseMeta(dst *responseMeta, src responseMeta) {
 	}
 	if src.PromptTokens > 0 {
 		dst.PromptTokens = src.PromptTokens
+	}
+	if src.CachedPromptTokens > 0 {
+		dst.CachedPromptTokens = src.CachedPromptTokens
 	}
 	if src.CompletionTok > 0 {
 		dst.CompletionTok = src.CompletionTok
@@ -834,6 +856,7 @@ func initDB(db *sql.DB) error {
 	stmts := []string{
 		`PRAGMA journal_mode = WAL;`,
 		`PRAGMA synchronous = NORMAL;`,
+		`PRAGMA busy_timeout = 5000;`,
 		`CREATE TABLE IF NOT EXISTS requests (
 			id TEXT PRIMARY KEY,
 			created_at DATETIME NOT NULL,
@@ -849,6 +872,8 @@ func initDB(db *sql.DB) error {
 			request_bytes INTEGER NOT NULL DEFAULT 0,
 			response_bytes INTEGER NOT NULL DEFAULT 0,
 			prompt_tokens INTEGER NOT NULL DEFAULT 0,
+			cached_prompt_tokens INTEGER NOT NULL DEFAULT 0,
+			cache_hit_pct REAL NOT NULL DEFAULT 0,
 			completion_tokens INTEGER NOT NULL DEFAULT 0,
 			total_tokens INTEGER NOT NULL DEFAULT 0,
 			prompt_ms REAL NOT NULL DEFAULT 0,
@@ -877,7 +902,39 @@ func initDB(db *sql.DB) error {
 			return err
 		}
 	}
+	if err := ensureRequestColumn(db, "cached_prompt_tokens", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := ensureRequestColumn(db, "cache_hit_pct", "REAL NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
 	return nil
+}
+
+func ensureRequestColumn(db *sql.DB, name string, def string) error {
+	rows, err := db.Query(`PRAGMA table_info(requests)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var colName, colType string
+		var notnull int
+		var dfltValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &colName, &colType, &notnull, &dfltValue, &pk); err != nil {
+			return err
+		}
+		if colName == name {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = db.Exec(fmt.Sprintf(`ALTER TABLE requests ADD COLUMN %s %s`, name, def))
+	return err
 }
 
 func normalizeDB(db *sql.DB) error {
@@ -902,40 +959,164 @@ func normalizeDB(db *sql.DB) error {
 	return err
 }
 
-func (s *Server) insertRequest(rec RequestRecord) error {
-	_, err := s.db.Exec(`INSERT INTO requests (
-		id, created_at, method, path, query, client_ip, backend_url, model,
-		is_streaming, request_bytes, request_raw_path, user_agent
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		rec.ID, rec.CreatedAt.Format(time.RFC3339Nano), rec.Method, rec.Path, rec.Query,
-		rec.ClientIP, rec.BackendURL, rec.Model, boolToInt(rec.IsStreaming),
-		rec.RequestBytes, rec.RequestRawPath, rec.UserAgent,
-	)
+func retryDBWrite(op func() error) error {
+	var err error
+	for attempt := 0; attempt < 5; attempt++ {
+		if err = op(); err == nil {
+			return nil
+		}
+		if !isBusyError(err) {
+			return err
+		}
+		time.Sleep(time.Duration(40*(attempt+1)) * time.Millisecond)
+	}
 	return err
 }
 
+func isBusyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "database is locked") || strings.Contains(msg, "sqlbusy") || strings.Contains(msg, "sqlite_busy") || strings.Contains(msg, "busy")
+}
+
+func findRawPayloadPath(dataDir, requestID, kind string) (string, bool) {
+	rawRoot := filepath.Join(dataDir, "raw")
+	entries, err := os.ReadDir(rawRoot)
+	if err != nil {
+		return "", false
+	}
+	fileName := fmt.Sprintf("%s-%s.gz", requestID, kind)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		fullPath := filepath.Join(rawRoot, entry.Name(), fileName)
+		if _, err := os.Stat(fullPath); err == nil {
+			return filepath.Join("raw", entry.Name(), fileName), true
+		}
+	}
+	return "", false
+}
+
+func repairStuckRequests(db *sql.DB, dataDir string) error {
+	rows, err := db.Query(`SELECT
+		id, created_at, method, path, query, client_ip, backend_url, model,
+		is_streaming, status_code, error_text, request_bytes, response_bytes,
+		prompt_tokens, cached_prompt_tokens, cache_hit_pct, completion_tokens, total_tokens,
+		prompt_ms, completion_ms, total_ms, first_byte_ms, chunks_count,
+		request_raw_path, response_raw_path, user_agent
+		FROM requests WHERE status_code = 0 AND (response_raw_path IS NULL OR response_raw_path = '')`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		rec, err := scanRequest(rows)
+		if err != nil {
+			return err
+		}
+		respRel, ok := findRawPayloadPath(dataDir, rec.ID, "response")
+		if !ok {
+			continue
+		}
+		respAbs := filepath.Join(dataDir, respRel)
+		respBytes, err := readGzipFile(respAbs)
+		if err != nil {
+			continue
+		}
+		meta := parseResponseMeta(http.Header{"Content-Type": []string{"text/event-stream"}}, respBytes)
+		if meta.Model != "" {
+			rec.Model = meta.Model
+		}
+		rec.StatusCode = http.StatusOK
+		rec.ResponseBytes = int64(len(respBytes))
+		rec.PromptTokens = meta.PromptTokens
+		rec.CachedPromptTokens = meta.CachedPromptTokens
+		if meta.PromptTokens > 0 && meta.CachedPromptTokens > 0 {
+			rec.CacheHitPct = float64(meta.CachedPromptTokens) / float64(meta.PromptTokens) * 100
+		}
+		rec.CompletionTokens = meta.CompletionTok
+		rec.TotalTokens = meta.TotalTokens
+		rec.PromptMs = meta.PromptMs
+		rec.CompletionMs = meta.CompletionMs
+		if stat, statErr := os.Stat(respAbs); statErr == nil {
+			rec.TotalMs = float64(stat.ModTime().UTC().Sub(rec.CreatedAt.UTC()).Milliseconds())
+		}
+		rec.ResponseRawPath = respRel
+		if err := retryDBWrite(func() error {
+			_, err := db.Exec(`UPDATE requests SET
+				model = ?,
+				status_code = ?,
+				error_text = ?,
+				response_bytes = ?,
+				prompt_tokens = ?,
+				cached_prompt_tokens = ?,
+				cache_hit_pct = ?,
+				completion_tokens = ?,
+				total_tokens = ?,
+				prompt_ms = ?,
+				completion_ms = ?,
+				total_ms = ?,
+				first_byte_ms = ?,
+				chunks_count = ?,
+				response_raw_path = ?
+				WHERE id = ?`,
+				rec.Model, rec.StatusCode, rec.ErrorText, rec.ResponseBytes,
+				rec.PromptTokens, rec.CachedPromptTokens, rec.CacheHitPct, rec.CompletionTokens, rec.TotalTokens,
+				rec.PromptMs, rec.CompletionMs, rec.TotalMs, rec.FirstByteMs,
+				rec.ChunksCount, rec.ResponseRawPath, rec.ID,
+			)
+			return err
+		}); err != nil {
+			continue
+		}
+	}
+	return rows.Err()
+}
+
+func (s *Server) insertRequest(rec RequestRecord) error {
+	return retryDBWrite(func() error {
+		_, err := s.db.Exec(`INSERT INTO requests (
+			id, created_at, method, path, query, client_ip, backend_url, model,
+			is_streaming, request_bytes, request_raw_path, user_agent
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			rec.ID, rec.CreatedAt.Format(time.RFC3339Nano), rec.Method, rec.Path, rec.Query,
+			rec.ClientIP, rec.BackendURL, rec.Model, boolToInt(rec.IsStreaming),
+			rec.RequestBytes, rec.RequestRawPath, rec.UserAgent,
+		)
+		return err
+	})
+}
+
 func (s *Server) finishRequest(id string, rec RequestRecord) error {
-	_, err := s.db.Exec(`UPDATE requests SET
-		model = ?,
-		status_code = ?,
-		error_text = ?,
-		response_bytes = ?,
-		prompt_tokens = ?,
-		completion_tokens = ?,
-		total_tokens = ?,
-		prompt_ms = ?,
-		completion_ms = ?,
-		total_ms = ?,
-		first_byte_ms = ?,
-		chunks_count = ?,
-		response_raw_path = ?
-		WHERE id = ?`,
-		rec.Model, rec.StatusCode, rec.ErrorText, rec.ResponseBytes,
-		rec.PromptTokens, rec.CompletionTokens, rec.TotalTokens,
-		rec.PromptMs, rec.CompletionMs, rec.TotalMs, rec.FirstByteMs,
-		rec.ChunksCount, rec.ResponseRawPath, id,
-	)
-	return err
+	return retryDBWrite(func() error {
+		_, err := s.db.Exec(`UPDATE requests SET
+			model = ?,
+			status_code = ?,
+			error_text = ?,
+			response_bytes = ?,
+			prompt_tokens = ?,
+			cached_prompt_tokens = ?,
+			cache_hit_pct = ?,
+			completion_tokens = ?,
+			total_tokens = ?,
+			prompt_ms = ?,
+			completion_ms = ?,
+			total_ms = ?,
+			first_byte_ms = ?,
+			chunks_count = ?,
+			response_raw_path = ?
+			WHERE id = ?`,
+			rec.Model, rec.StatusCode, rec.ErrorText, rec.ResponseBytes,
+			rec.PromptTokens, rec.CachedPromptTokens, rec.CacheHitPct, rec.CompletionTokens, rec.TotalTokens,
+			rec.PromptMs, rec.CompletionMs, rec.TotalMs, rec.FirstByteMs,
+			rec.ChunksCount, rec.ResponseRawPath, id,
+		)
+		return err
+	})
 }
 
 func (s *Server) getRequests(limit int, offset int, f RequestFilter) ([]RequestRecord, error) {
@@ -948,7 +1129,7 @@ func (s *Server) getRequests(limit int, offset int, f RequestFilter) ([]RequestR
 	query := `SELECT
 		id, created_at, method, path, query, client_ip, backend_url, model,
 		is_streaming, status_code, error_text, request_bytes, response_bytes,
-		prompt_tokens, completion_tokens, total_tokens,
+		prompt_tokens, cached_prompt_tokens, cache_hit_pct, completion_tokens, total_tokens,
 		prompt_ms, completion_ms, total_ms, first_byte_ms, chunks_count,
 		request_raw_path, response_raw_path, user_agent
 		FROM requests WHERE 1=1`
@@ -981,7 +1162,7 @@ func (s *Server) getRequestByID(id string) (RequestRecord, error) {
 	row := s.db.QueryRow(`SELECT
 		id, created_at, method, path, query, client_ip, backend_url, model,
 		is_streaming, status_code, error_text, request_bytes, response_bytes,
-		prompt_tokens, completion_tokens, total_tokens,
+		prompt_tokens, cached_prompt_tokens, cache_hit_pct, completion_tokens, total_tokens,
 		prompt_ms, completion_ms, total_ms, first_byte_ms, chunks_count,
 		request_raw_path, response_raw_path, user_agent
 		FROM requests WHERE id = ?`, id)
@@ -1010,11 +1191,15 @@ func (s *Server) deleteRequestByID(id string) error {
 			return err
 		}
 	}
-	res, err := s.db.Exec(`DELETE FROM requests WHERE id = ?`, id)
-	if err != nil {
+	var affected int64
+	err = retryDBWrite(func() error {
+		res, err := s.db.Exec(`DELETE FROM requests WHERE id = ?`, id)
+		if err != nil {
+			return err
+		}
+		affected, err = res.RowsAffected()
 		return err
-	}
-	affected, err := res.RowsAffected()
+	})
 	if err != nil {
 		return err
 	}
@@ -1061,7 +1246,7 @@ func (s *Server) getStats(hours int, f RequestFilter) (map[string]any, error) {
 		COALESCE(AVG(completion_ms),0),
 		COALESCE(AVG(total_ms),0),
 		COALESCE(AVG(first_byte_ms),0),
-		COALESCE(SUM(CASE WHEN status_code >= 400 OR status_code = 0 THEN 1 ELSE 0 END),0),
+		COALESCE(SUM(CASE WHEN status_code >= 400 OR error_text != '' THEN 1 ELSE 0 END),0),
 		COALESCE(SUM(is_streaming),0)
 		FROM requests WHERE created_at >= ?`
 	args := []any{since}
@@ -1111,29 +1296,29 @@ func (s *Server) getStats(hours int, f RequestFilter) (map[string]any, error) {
 	}
 
 	return map[string]any{
-		"hours":                   hours,
-		"active_connections":      s.active.Load(),
-		"total_requests":          totalRequests,
-		"total_prompt_tokens":     promptTokens,
-		"total_completion_tokens": completionTokens,
-		"total_tokens":            totalTokens,
-		"matching_total_requests": matchingRequests,
-		"matching_total_tokens":   matchingTokens,
-		"lifetime_total_requests": lifetimeRequests,
-		"lifetime_total_tokens":   lifetimeTokens,
-		"total_request_bytes":     reqBytes,
-		"total_response_bytes":    respBytes,
-		"avg_prompt_ms":           avgPromptMs,
-		"avg_completion_ms":       avgCompletionMs,
-		"avg_total_ms":            avgTotalMs,
-		"avg_first_byte_ms":       avgFirstByteMs,
-		"requests_per_minute":     rpm,
+		"hours":                    hours,
+		"active_connections":       s.active.Load(),
+		"total_requests":           totalRequests,
+		"total_prompt_tokens":      promptTokens,
+		"total_completion_tokens":  completionTokens,
+		"total_tokens":             totalTokens,
+		"matching_total_requests":  matchingRequests,
+		"matching_total_tokens":    matchingTokens,
+		"lifetime_total_requests":  lifetimeRequests,
+		"lifetime_total_tokens":    lifetimeTokens,
+		"total_request_bytes":      reqBytes,
+		"total_response_bytes":     respBytes,
+		"avg_prompt_ms":            avgPromptMs,
+		"avg_completion_ms":        avgCompletionMs,
+		"avg_total_ms":             avgTotalMs,
+		"avg_first_byte_ms":        avgFirstByteMs,
+		"requests_per_minute":      rpm,
 		"prompt_tokens_per_second": promptTokensPerSec,
 		"decode_tokens_per_second": decodeTokensPerSec,
-		"tokens_per_second":       tokensPerSec,
-		"errors_count":            errorsCount,
-		"error_rate":              errorRate,
-		"streaming_requests":      streamCount,
+		"tokens_per_second":        tokensPerSec,
+		"errors_count":             errorsCount,
+		"error_rate":               errorRate,
+		"streaming_requests":       streamCount,
 	}, nil
 }
 
@@ -1186,10 +1371,16 @@ func (s *Server) cleanup() {
 		return
 	}
 	cutoff := time.Now().UTC().AddDate(0, 0, -s.cfg.RetentionDays).Format(time.RFC3339Nano)
-	if _, err := s.db.Exec(`DELETE FROM requests WHERE created_at < ?`, cutoff); err != nil {
+	if err := retryDBWrite(func() error {
+		_, err := s.db.Exec(`DELETE FROM requests WHERE created_at < ?`, cutoff)
+		return err
+	}); err != nil {
 		log.Printf("cleanup requests failed: %v", err)
 	}
-	if _, err := s.db.Exec(`DELETE FROM backend_metrics WHERE created_at < ?`, cutoff); err != nil {
+	if err := retryDBWrite(func() error {
+		_, err := s.db.Exec(`DELETE FROM backend_metrics WHERE created_at < ?`, cutoff)
+		return err
+	}); err != nil {
 		log.Printf("cleanup backend_metrics failed: %v", err)
 	}
 
@@ -1215,6 +1406,10 @@ func (s *Server) cleanup() {
 }
 
 func appendRequestFilterSQL(query string, args []any, f RequestFilter, includeSince bool) (string, []any) {
+	if f.ChatCompletionsOnly {
+		query += ` AND method = ? AND path = ?`
+		args = append(args, http.MethodPost, "/v1/chat/completions")
+	}
 	if f.Path != "" {
 		query += ` AND path LIKE ?`
 		args = append(args, "%"+f.Path+"%")
@@ -1241,7 +1436,7 @@ func appendRequestFilterSQL(query string, args []any, f RequestFilter, includeSi
 		args = append(args, boolToInt(*f.Streaming))
 	}
 	if f.ErrorsOnly {
-		query += ` AND (status_code >= 400 OR status_code = 0 OR error_text != '')`
+		query += ` AND (status_code >= 400 OR error_text != '')`
 	}
 	if f.WithTokens {
 		query += ` AND total_tokens > 0`
@@ -1286,14 +1481,19 @@ func (s *Server) pollBackendMetrics(ctx context.Context) {
 	}
 	metrics := parsePrometheusText(string(body))
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	tx, err := s.db.Begin()
-	if err != nil {
-		return
-	}
-	for name, value := range metrics {
-		_, _ = tx.Exec(`INSERT INTO backend_metrics (created_at, backend_url, metric_name, metric_value) VALUES (?, ?, ?, ?)`, now, s.cfg.DefaultBackend, name, value)
-	}
-	_ = tx.Commit()
+	_ = retryDBWrite(func() error {
+		tx, err := s.db.Begin()
+		if err != nil {
+			return err
+		}
+		for name, value := range metrics {
+			if _, err := tx.Exec(`INSERT INTO backend_metrics (created_at, backend_url, metric_name, metric_value) VALUES (?, ?, ?, ?)`, now, s.cfg.DefaultBackend, name, value); err != nil {
+				_ = tx.Rollback()
+				return err
+			}
+		}
+		return tx.Commit()
+	})
 }
 
 func parsePrometheusText(text string) map[string]float64 {
@@ -1349,6 +1549,8 @@ func scanRequest(s scanner) (RequestRecord, error) {
 		&rec.RequestBytes,
 		&rec.ResponseBytes,
 		&rec.PromptTokens,
+		&rec.CachedPromptTokens,
+		&rec.CacheHitPct,
 		&rec.CompletionTokens,
 		&rec.TotalTokens,
 		&rec.PromptMs,
@@ -1376,6 +1578,9 @@ func scanRequest(s scanner) (RequestRecord, error) {
 		rec.CreatedAt = t
 	}
 	rec.IsStreaming = streamInt == 1
+	if rec.CacheHitPct == 0 && rec.PromptTokens > 0 && rec.CachedPromptTokens > 0 {
+		rec.CacheHitPct = float64(rec.CachedPromptTokens) / float64(rec.PromptTokens) * 100
+	}
 	return rec, nil
 }
 

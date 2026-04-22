@@ -13,7 +13,7 @@ const el = {
   active: document.getElementById("activeConnections"),
   reqHour: document.getElementById("requestsHour"),
   totalRequests: document.getElementById("totalRequests"),
-  promptSec: document.getElementById("promptSec"),
+  outputSec: document.getElementById("outputSec"),
   totalTokens: document.getElementById("totalTokens"),
   ttft: document.getElementById("avgTtft"),
   errorRate: document.getElementById("errorRate"),
@@ -42,6 +42,8 @@ const el = {
   detailPromptRate: document.getElementById("detailPromptRate"),
   detailDecodeRate: document.getElementById("detailDecodeRate"),
   detailPromptTokens: document.getElementById("detailPromptTokens"),
+  detailCachedPromptTokens: document.getElementById("detailCachedPromptTokens"),
+  detailCacheHitPct: document.getElementById("detailCacheHitPct"),
   detailCompletionTokens: document.getElementById("detailCompletionTokens"),
   detailTotalTokens: document.getElementById("detailTotalTokens"),
   detailRequestBytes: document.getElementById("detailRequestBytes"),
@@ -70,6 +72,7 @@ const el = {
   fStream: document.getElementById("fStream"),
   fErrorsOnly: document.getElementById("fErrorsOnly"),
   fWithTokens: document.getElementById("fWithTokens"),
+  fChatCompletions: document.getElementById("fChatCompletions"),
   btnApply: document.getElementById("btnApply"),
   btnReset: document.getElementById("btnReset"),
   tabs: Array.from(document.querySelectorAll(".tab")),
@@ -117,6 +120,13 @@ function fmtPercent(value) {
     return "0%";
   }
   return `${(value * 100).toFixed(2)}%`;
+}
+
+function fmtPercentValue(value) {
+  if (!Number.isFinite(value)) {
+    return "0%";
+  }
+  return `${value.toFixed(2)}%`;
 }
 
 function fmtBytes(value) {
@@ -214,6 +224,13 @@ function rateTone(rate) {
   if (rate < 25) return "tone-hot";
   if (rate < 45) return "tone-warm";
   return "tone-good";
+}
+
+function cacheTone(pct) {
+  if (!Number.isFinite(pct) || pct <= 0) return "";
+  if (pct >= 50) return "tone-good";
+  if (pct >= 20) return "tone-warm";
+  return "tone-hot";
 }
 
 function metricCell(primary, secondary = "") {
@@ -314,6 +331,7 @@ function collectFilters() {
   if (el.fStream.value) filters.stream = el.fStream.value;
   if (el.fErrorsOnly.checked) filters.errors_only = "true";
   if (el.fWithTokens.checked) filters.with_tokens = "true";
+  if (el.fChatCompletions.checked) filters.chat_completions_only = "true";
   state.filters = filters;
   renderFilterTags();
 }
@@ -328,6 +346,7 @@ function resetFilters() {
   el.fStream.value = "";
   el.fErrorsOnly.checked = false;
   el.fWithTokens.checked = false;
+  el.fChatCompletions.checked = false;
   collectFilters();
 }
 
@@ -357,10 +376,26 @@ function renderFilterTags() {
     return;
   }
 
+  const labels = {
+    q: "search",
+    path: "path",
+    model: "model",
+    method: "method",
+    status: "status",
+    since_hours: "since",
+    stream: "stream",
+    errors_only: "errors",
+    with_tokens: "tokens",
+    chat_completions_only: "chat",
+  };
   entries.forEach(([key, value]) => {
     const tag = document.createElement("span");
     tag.className = "filter-tag";
-    tag.textContent = `${key}: ${value}`;
+    if (key === "chat_completions_only") {
+      tag.textContent = "POST /v1/chat/completions";
+    } else {
+      tag.textContent = `${labels[key] || key}: ${value}`;
+    }
     el.activeFilters.appendChild(tag);
   });
 }
@@ -379,13 +414,22 @@ function hasActiveFilters() {
   return Object.keys(state.filters).length > 0;
 }
 
+function updateOutputRateFromRows(items) {
+  const rates = (items || [])
+    .map((item) => Number(item.decode_tok_per_sec || 0))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  const avg = rates.length
+    ? rates.reduce((sum, value) => sum + value, 0) / rates.length
+    : 0;
+  el.outputSec.textContent = fmtRate(avg);
+}
+
 async function loadStats() {
   const hours = Number.parseInt(state.filters.since_hours || "1", 10) || 1;
   const stats = await fetchJSON(`/_monitor/stats?${queryString({ hours, ...state.filters })}`);
   el.active.textContent = fmtNum(stats.active_connections || 0);
   el.reqHour.textContent = fmtNum(Math.round((stats.requests_per_minute || 0) * 60));
   el.totalRequests.textContent = fmtNum(hasActiveFilters() ? (stats.matching_total_requests || 0) : (stats.lifetime_total_requests || 0));
-  el.promptSec.textContent = fmtRate(stats.prompt_tokens_per_second || 0);
   el.totalTokens.textContent = fmtNum(hasActiveFilters() ? (stats.matching_total_tokens || 0) : (stats.lifetime_total_tokens || 0));
   el.ttft.textContent = fmtMs(stats.avg_first_byte_ms || 0);
   el.errorRate.textContent = fmtPercent(stats.error_rate || 0);
@@ -429,10 +473,6 @@ function renderRequests(items) {
         <div class="subtle">${escapeHTML(item.query || "No query string")}</div>
       </div>`;
 
-    const trafficCell = `
-      <div class="cell-metric">${fmtBytes(item.request_bytes || 0)}</div>
-      <div class="cell-subtle">${fmtBytes(item.response_bytes || 0)} out</div>`;
-
     row.innerHTML = `
       <td class="align-left sticky-col sticky-time">${metricCell(fmtDate(item.created_at), item.client_ip || "unknown client")}</td>
       <td class="sticky-col sticky-request">${requestCell}</td>
@@ -446,8 +486,8 @@ function renderRequests(items) {
       <td class="align-right">${numericCell(fmtNum(item.prompt_tokens || 0))}</td>
       <td class="align-right">${numericCell(fmtNum(item.completion_tokens || 0))}</td>
       <td class="align-right">${numericCell(fmtNum(item.total_tokens || 0))}</td>
+      <td class="align-right ${cacheTone(item.cache_hit_pct || 0)}">${numericCell(fmtPercentValue(item.cache_hit_pct || 0), item.cached_prompt_tokens > 0 ? `${fmtNum(item.cached_prompt_tokens)} cached` : "no cache")}</td>
       <td class="align-right ${rateTone(item.decode_tok_per_sec || 0)}">${numericCell(fmtRate(item.decode_tok_per_sec || 0), `prompt ${fmtRate(item.prompt_tok_per_sec || 0)}`)}</td>
-      <td class="align-right">${trafficCell}</td>
     `;
 
     if (completed) {
@@ -455,6 +495,7 @@ function renderRequests(items) {
     }
     el.body.appendChild(row);
   }
+  updateOutputRateFromRows(items);
 }
 
 async function fetchRaw(id, part) {
@@ -493,6 +534,8 @@ async function openDetails(id) {
   el.detailPromptRate.textContent = fmtRate(rec.prompt_tok_per_sec || 0);
   el.detailDecodeRate.textContent = fmtRate(rec.decode_tok_per_sec || 0);
   el.detailPromptTokens.textContent = fmtNum(rec.prompt_tokens || 0);
+  el.detailCachedPromptTokens.textContent = fmtNum(rec.cached_prompt_tokens || 0);
+  el.detailCacheHitPct.textContent = rec.prompt_tokens > 0 ? fmtPercentValue(rec.cache_hit_pct || 0) : "-";
   el.detailCompletionTokens.textContent = fmtNum(rec.completion_tokens || 0);
   el.detailTotalTokens.textContent = fmtNum(rec.total_tokens || 0);
   el.detailRequestBytes.textContent = fmtBytes(rec.request_bytes || 0);
@@ -511,6 +554,7 @@ async function openDetails(id) {
   setToneClass(el.detailTotal.parentElement, "mini-stat-", latencyTone(rec.total_ms).replace("tone-", ""));
   setToneClass(el.detailPromptRate.parentElement, "mini-stat-", rateTone(rec.prompt_tok_per_sec || 0).replace("tone-", ""));
   setToneClass(el.detailDecodeRate.parentElement, "mini-stat-", rateTone(rec.decode_tok_per_sec || 0).replace("tone-", ""));
+  setToneClass(el.detailCacheHitPct.parentElement, "mini-stat-", cacheTone(rec.cache_hit_pct || 0).replace("tone-", ""));
   el.rawReq.textContent = "Loading request payload...";
   el.structuredResp.textContent = "Building structured response...";
   el.rawResp.textContent = "Loading response payload...";
@@ -547,6 +591,8 @@ function clearDetails() {
   el.detailPromptRate.textContent = "-";
   el.detailDecodeRate.textContent = "-";
   el.detailPromptTokens.textContent = "-";
+  el.detailCachedPromptTokens.textContent = "-";
+  el.detailCacheHitPct.textContent = "-";
   el.detailCompletionTokens.textContent = "-";
   el.detailTotalTokens.textContent = "-";
   el.detailRequestBytes.textContent = "-";
@@ -565,6 +611,7 @@ function clearDetails() {
   setToneClass(el.detailTotal.parentElement, "mini-stat-", "");
   setToneClass(el.detailPromptRate.parentElement, "mini-stat-", "");
   setToneClass(el.detailDecodeRate.parentElement, "mini-stat-", "");
+  setToneClass(el.detailCacheHitPct.parentElement, "mini-stat-", "");
   el.rawReq.textContent = "No request selected.";
   el.structuredResp.textContent = "No request selected.";
   el.rawResp.textContent = "No request selected.";
@@ -661,6 +708,7 @@ function wireFilters() {
 
   el.autoRefresh.addEventListener("change", () => {
     state.autoRefresh = el.autoRefresh.checked;
+    el.autoRefresh.parentElement.classList.toggle("is-active", state.autoRefresh);
   });
 
   el.drawerClose.addEventListener("click", clearDetails);
@@ -685,6 +733,7 @@ async function boot() {
   renderFilterTags();
   setFiltersCollapsed(localStorage.getItem(FILTERS_COLLAPSED_KEY) === "1");
   setMetricsMode(localStorage.getItem(METRICS_MODE_KEY) || "cards");
+  el.autoRefresh.parentElement.classList.toggle("is-active", el.autoRefresh.checked);
   setupTabs();
   wireFilters();
   connectEvents();

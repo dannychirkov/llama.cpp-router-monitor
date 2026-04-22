@@ -19,7 +19,7 @@ import (
 func TestParseResponseMetaJSON(t *testing.T) {
 	body := []byte(`{
 		"model":"llama-actual",
-		"usage":{"prompt_tokens":481,"completion_tokens":712,"total_tokens":1193},
+		"usage":{"prompt_tokens":481,"completion_tokens":712,"total_tokens":1193,"prompt_tokens_details":{"cached_tokens":88}},
 		"timings":{"prompt_ms":120.5,"predicted_ms":356.25}
 	}`)
 	meta := parseResponseMeta(http.Header{"Content-Type": []string{"application/json"}}, body)
@@ -28,6 +28,9 @@ func TestParseResponseMetaJSON(t *testing.T) {
 	}
 	if meta.PromptTokens != 481 || meta.CompletionTok != 712 || meta.TotalTokens != 1193 {
 		t.Fatalf("unexpected tokens: %+v", meta)
+	}
+	if meta.CachedPromptTokens != 88 {
+		t.Fatalf("unexpected cached tokens: %+v", meta)
 	}
 	if meta.PromptMs != 120.5 || meta.CompletionMs != 356.25 {
 		t.Fatalf("unexpected timings: %+v", meta)
@@ -53,7 +56,7 @@ func TestParseResponseMetaSSE(t *testing.T) {
 func TestParseResponseMetaSSEKeepsLaterPromptTokens(t *testing.T) {
 	body := []byte(strings.Join([]string{
 		`data: {"model":"stream-model","timings":{"prompt_n":0,"predicted_n":0}}`,
-		`data: {"timings":{"prompt_n":19,"predicted_n":712,"prompt_ms":42,"predicted_ms":1337}}`,
+		`data: {"usage":{"prompt_tokens":19,"completion_tokens":712,"total_tokens":731,"prompt_tokens_details":{"cached_tokens":3}},"timings":{"prompt_n":19,"predicted_n":712,"prompt_ms":42,"predicted_ms":1337}}`,
 		`data: [DONE]`,
 		"",
 	}, "\n"))
@@ -63,6 +66,9 @@ func TestParseResponseMetaSSEKeepsLaterPromptTokens(t *testing.T) {
 	}
 	if meta.PromptTokens != 19 || meta.CompletionTok != 712 || meta.TotalTokens != 731 {
 		t.Fatalf("unexpected tokens: %+v", meta)
+	}
+	if meta.CachedPromptTokens != 3 {
+		t.Fatalf("unexpected cached tokens: %+v", meta)
 	}
 	if meta.PromptMs != 42 || meta.CompletionMs != 1337 {
 		t.Fatalf("unexpected timings: %+v", meta)
@@ -372,6 +378,20 @@ func TestGetStatsAggregatesRollingAndLifetime(t *testing.T) {
 			IsStreaming:      false,
 		},
 		{
+			ID:               "recent-error",
+			CreatedAt:        now.Add(-7 * time.Minute),
+			Method:           http.MethodPost,
+			Path:             "/completion",
+			StatusCode:       http.StatusInternalServerError,
+			RequestBytes:     25,
+			ResponseBytes:    12,
+			PromptTokens:     2,
+			CompletionTokens: 0,
+			TotalTokens:      2,
+			ErrorText:        "backend exploded",
+			IsStreaming:      false,
+		},
+		{
 			ID:               "recent-live",
 			CreatedAt:        now.Add(-5 * time.Minute),
 			Method:           http.MethodPost,
@@ -414,16 +434,16 @@ func TestGetStatsAggregatesRollingAndLifetime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get stats: %v", err)
 	}
-	if stats["total_requests"].(int64) != 2 {
+	if stats["total_requests"].(int64) != 3 {
 		t.Fatalf("rolling total_requests=%v", stats["total_requests"])
 	}
-	if stats["lifetime_total_requests"].(int64) != 3 {
+	if stats["lifetime_total_requests"].(int64) != 4 {
 		t.Fatalf("lifetime_total_requests=%v", stats["lifetime_total_requests"])
 	}
-	if stats["total_tokens"].(int64) != 30 {
+	if stats["total_tokens"].(int64) != 32 {
 		t.Fatalf("rolling total_tokens=%v", stats["total_tokens"])
 	}
-	if stats["lifetime_total_tokens"].(int64) != 45 {
+	if stats["lifetime_total_tokens"].(int64) != 47 {
 		t.Fatalf("lifetime_total_tokens=%v", stats["lifetime_total_tokens"])
 	}
 	if stats["prompt_tokens_per_second"].(float64) <= 0 {
@@ -437,6 +457,44 @@ func TestGetStatsAggregatesRollingAndLifetime(t *testing.T) {
 	}
 	if stats["streaming_requests"].(int64) != 1 {
 		t.Fatalf("streaming_requests=%v", stats["streaming_requests"])
+	}
+}
+
+func TestGetStatsIgnoresLiveRequestsInErrors(t *testing.T) {
+	svc, db, cleanup := newTestServer(t, "http://example.invalid")
+	defer cleanup()
+	defer db.Close()
+
+	now := time.Now().UTC()
+	for _, rec := range []RequestRecord{
+		{
+			ID:          "live",
+			CreatedAt:   now.Add(-2 * time.Minute),
+			Method:      http.MethodPost,
+			Path:        "/v1/chat/completions",
+			StatusCode:  0,
+			IsStreaming: true,
+		},
+		{
+			ID:          "ok",
+			CreatedAt:   now.Add(-1 * time.Minute),
+			Method:      http.MethodPost,
+			Path:        "/v1/chat/completions",
+			StatusCode:  http.StatusOK,
+			TotalTokens: 10,
+		},
+	} {
+		if err := seedRequest(t, svc, rec); err != nil {
+			t.Fatalf("seed request %s: %v", rec.ID, err)
+		}
+	}
+
+	stats, err := svc.getStats(24, RequestFilter{})
+	if err != nil {
+		t.Fatalf("get stats: %v", err)
+	}
+	if stats["errors_count"].(int64) != 0 {
+		t.Fatalf("errors_count=%v", stats["errors_count"])
 	}
 }
 
@@ -480,6 +538,144 @@ func TestGetRequestsWithTokensFilter(t *testing.T) {
 	}
 	if items[0].ID != "with-tokens" {
 		t.Fatalf("unexpected item id=%q", items[0].ID)
+	}
+}
+
+func TestGetRequestsChatCompletionsOnlyFilter(t *testing.T) {
+	svc, db, cleanup := newTestServer(t, "http://example.invalid")
+	defer cleanup()
+	defer db.Close()
+
+	now := time.Now().UTC()
+	for _, rec := range []RequestRecord{
+		{
+			ID:          "chat",
+			CreatedAt:   now,
+			Method:      http.MethodPost,
+			Path:        "/v1/chat/completions",
+			StatusCode:  http.StatusOK,
+			TotalTokens: 42,
+		},
+		{
+			ID:          "other-path",
+			CreatedAt:   now.Add(-time.Minute),
+			Method:      http.MethodPost,
+			Path:        "/v1/completions",
+			StatusCode:  http.StatusOK,
+			TotalTokens: 42,
+		},
+		{
+			ID:          "other-method",
+			CreatedAt:   now.Add(-2 * time.Minute),
+			Method:      http.MethodGet,
+			Path:        "/v1/chat/completions",
+			StatusCode:  http.StatusOK,
+			TotalTokens: 42,
+		},
+	} {
+		if err := seedRequest(t, svc, rec); err != nil {
+			t.Fatalf("seed request %s: %v", rec.ID, err)
+		}
+	}
+
+	items, err := svc.getRequests(20, 0, RequestFilter{ChatCompletionsOnly: true})
+	if err != nil {
+		t.Fatalf("get requests: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
+	}
+	if items[0].ID != "chat" {
+		t.Fatalf("unexpected item id=%q", items[0].ID)
+	}
+}
+
+func TestCacheFieldsPersistThroughDB(t *testing.T) {
+	svc, db, cleanup := newTestServer(t, "http://example.invalid")
+	defer cleanup()
+	defer db.Close()
+
+	now := time.Now().UTC()
+	if err := seedRequest(t, svc, RequestRecord{
+		ID:                 "cache-row",
+		CreatedAt:          now,
+		Method:             http.MethodPost,
+		Path:               "/v1/chat/completions",
+		StatusCode:         http.StatusOK,
+		PromptTokens:       100,
+		CachedPromptTokens: 40,
+		CacheHitPct:        40,
+		CompletionTokens:   20,
+		TotalTokens:        120,
+	}); err != nil {
+		t.Fatalf("seed request: %v", err)
+	}
+
+	rec, err := svc.getRequestByID("cache-row")
+	if err != nil {
+		t.Fatalf("get request: %v", err)
+	}
+	if rec.CachedPromptTokens != 40 {
+		t.Fatalf("cached_prompt_tokens=%v", rec.CachedPromptTokens)
+	}
+	if rec.CacheHitPct != 40 {
+		t.Fatalf("cache_hit_pct=%v", rec.CacheHitPct)
+	}
+}
+
+func TestRepairStuckRequestsBackfillsCachedTokens(t *testing.T) {
+	svc, db, cleanup := newTestServer(t, "http://example.invalid")
+	defer cleanup()
+	defer db.Close()
+
+	body := []byte(strings.Join([]string{
+		`data: {"choices":[{"finish_reason":null,"index":0,"delta":{"content":"hi"}}]}`,
+		`data: {"choices":[],"created":1776808981,"id":"chatcmpl-l1GS0rzBrGyTnkYcRsQPVe4glheJV3i6","model":"gemma-4-26B-A4B-it-heretic-ara-v2.i1-IQ4_XS.gguf","object":"chat.completion.chunk","usage":{"completion_tokens":696,"prompt_tokens":27597,"total_tokens":28293,"prompt_tokens_details":{"cached_tokens":26972}},"timings":{"cache_n":26972,"prompt_n":625,"prompt_ms":795.72,"prompt_per_second":1739.05,"predicted_n":696,"predicted_ms":14394.43,"predicted_per_second":48.35}}`,
+		`data: [DONE]`,
+		"",
+	}, "\n"))
+	respRaw, err := svc.saveRawPayload("repair-row", "response", body)
+	if err != nil {
+		t.Fatalf("save raw: %v", err)
+	}
+	if err := svc.insertRequest(RequestRecord{
+		ID:             "repair-row",
+		CreatedAt:      time.Now().UTC().Add(-5 * time.Minute),
+		Method:         http.MethodPost,
+		Path:           "/v1/chat/completions",
+		StatusCode:     0,
+		Model:          "proxy-9091",
+		RequestBytes:   1024,
+		RequestRawPath: "",
+	}); err != nil {
+		t.Fatalf("insert request: %v", err)
+	}
+
+	if err := repairStuckRequests(db, svc.cfg.DataDir); err != nil {
+		t.Fatalf("repair stuck requests: %v", err)
+	}
+
+	rec, err := svc.getRequestByID("repair-row")
+	if err != nil {
+		t.Fatalf("get request: %v", err)
+	}
+	if rec.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", rec.StatusCode)
+	}
+	if rec.CachedPromptTokens != 26972 {
+		t.Fatalf("cached_prompt_tokens=%v", rec.CachedPromptTokens)
+	}
+	if rec.PromptTokens != 27597 || rec.CompletionTokens != 696 || rec.TotalTokens != 28293 {
+		t.Fatalf("unexpected tokens: %+v", rec)
+	}
+	if rec.ResponseRawPath == "" {
+		t.Fatal("expected response raw path")
+	}
+	if rec.ResponseRawPath != respRaw {
+		t.Fatalf("response_raw_path=%q want %q", rec.ResponseRawPath, respRaw)
+	}
+	if rec.CacheHitPct < 97.7 || rec.CacheHitPct > 97.8 {
+		t.Fatalf("cache_hit_pct=%v", rec.CacheHitPct)
 	}
 }
 
