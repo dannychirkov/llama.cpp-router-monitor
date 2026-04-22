@@ -590,6 +590,63 @@ func TestGetRequestsChatCompletionsOnlyFilter(t *testing.T) {
 	}
 }
 
+func TestGetModelsReturnsDistinctSortedValues(t *testing.T) {
+	svc, db, cleanup := newTestServer(t, "http://example.invalid")
+	defer cleanup()
+	defer db.Close()
+
+	now := time.Now().UTC()
+	for _, rec := range []RequestRecord{
+		{
+			ID:         "m1",
+			CreatedAt:  now,
+			Method:     http.MethodPost,
+			Path:       "/v1/chat/completions",
+			Model:      "qwen-3",
+			StatusCode: http.StatusOK,
+		},
+		{
+			ID:         "m2",
+			CreatedAt:  now.Add(-time.Minute),
+			Method:     http.MethodPost,
+			Path:       "/v1/chat/completions",
+			Model:      "Gemma-4",
+			StatusCode: http.StatusOK,
+		},
+		{
+			ID:         "m3",
+			CreatedAt:  now.Add(-2 * time.Minute),
+			Method:     http.MethodPost,
+			Path:       "/v1/chat/completions",
+			Model:      "qwen-3",
+			StatusCode: http.StatusOK,
+		},
+		{
+			ID:         "m4",
+			CreatedAt:  now.Add(-3 * time.Minute),
+			Method:     http.MethodPost,
+			Path:       "/v1/chat/completions",
+			Model:      "",
+			StatusCode: http.StatusOK,
+		},
+	} {
+		if err := seedRequest(t, svc, rec); err != nil {
+			t.Fatalf("seed request %s: %v", rec.ID, err)
+		}
+	}
+
+	items, err := svc.getModels()
+	if err != nil {
+		t.Fatalf("get models: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("expected 2 models, got %d (%v)", len(items), items)
+	}
+	if items[0] != "Gemma-4" || items[1] != "qwen-3" {
+		t.Fatalf("unexpected models: %v", items)
+	}
+}
+
 func TestCacheFieldsPersistThroughDB(t *testing.T) {
 	svc, db, cleanup := newTestServer(t, "http://example.invalid")
 	defer cleanup()

@@ -256,6 +256,13 @@ func (s *Server) handleMonitor(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, stats)
+	case p == "/models":
+		items, err := s.getModels()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
 	case p == "/requests":
 		limit := getQueryInt(r, "limit", 100)
 		offset := getQueryInt(r, "offset", 0)
@@ -1320,6 +1327,31 @@ func (s *Server) getStats(hours int, f RequestFilter) (map[string]any, error) {
 		"error_rate":               errorRate,
 		"streaming_requests":       streamCount,
 	}, nil
+}
+
+func (s *Server) getModels() ([]string, error) {
+	rows, err := s.db.Query(`SELECT DISTINCT model
+		FROM requests
+		WHERE model IS NOT NULL AND TRIM(model) != ''
+		ORDER BY model COLLATE NOCASE ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := make([]string, 0, 64)
+	for rows.Next() {
+		var model string
+		if err := rows.Scan(&model); err != nil {
+			return nil, err
+		}
+		model = strings.TrimSpace(model)
+		if model == "" {
+			continue
+		}
+		items = append(items, model)
+	}
+	return items, rows.Err()
 }
 
 func (s *Server) getBackendMetrics(limit int) ([]map[string]any, error) {

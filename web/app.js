@@ -66,6 +66,7 @@ const el = {
   fQuery: document.getElementById("fQuery"),
   fPath: document.getElementById("fPath"),
   fModel: document.getElementById("fModel"),
+  modelOptions: document.getElementById("modelOptions"),
   fMethod: document.getElementById("fMethod"),
   fStatus: document.getElementById("fStatus"),
   fSince: document.getElementById("fSince"),
@@ -436,6 +437,17 @@ async function loadStats() {
   el.lastUpdated.textContent = fmtDate(new Date().toISOString());
 }
 
+async function loadModelOptions() {
+  const data = await fetchJSON("/_monitor/models");
+  const items = Array.isArray(data.items) ? data.items : [];
+  el.modelOptions.innerHTML = "";
+  for (const model of items) {
+    const option = document.createElement("option");
+    option.value = model;
+    el.modelOptions.appendChild(option);
+  }
+}
+
 async function loadRequests() {
   const params = {
     limit: state.limit,
@@ -737,7 +749,7 @@ async function boot() {
   setupTabs();
   wireFilters();
   connectEvents();
-  await refreshAll();
+  await Promise.all([refreshAll(), loadModelOptions()]);
   window.setInterval(() => {
     if (!state.autoRefresh) {
       return;
@@ -750,6 +762,9 @@ async function boot() {
     }
     loadRequests().catch(() => {});
   }, 9000);
+  window.setInterval(() => {
+    loadModelOptions().catch(() => {});
+  }, 30000);
 }
 
 boot().catch((err) => {
