@@ -175,6 +175,7 @@
           </div>
           <div class="table-meta">
             <span class="meta-chip"><strong id="resultsCount">0</strong> rows</span>
+            <span class="meta-chip"><strong id="resultsTotal">0</strong> total match</span>
             <span class="meta-chip">Select row for detail</span>
           </div>
         </div>
@@ -211,6 +212,13 @@
             </thead>
             <tbody id="requestsBody"></tbody>
           </table>
+        </div>
+
+        <div class="load-more-shell" id="loadMoreShell" hidden>
+          <div class="load-more-fade" aria-hidden="true"></div>
+          <div class="load-more-actions">
+            <button id="loadMoreBtn" class="btn btn-secondary" type="button">Load 100 more</button>
+          </div>
         </div>
 
         <div id="emptyState" class="empty-state" hidden>

@@ -1,12 +1,14 @@
 const state = {
-  limit: 200,
-  offset: 0,
+  pageSize: 100,
+  loadedCount: 100,
   filters: {},
   selectedId: null,
   refreshTimer: null,
   autoRefresh: true,
   latestItems: [],
   metricsMode: "cards",
+  hasMore: false,
+  loadingMore: false,
 };
 
 const el = {
@@ -24,6 +26,9 @@ const el = {
   body: document.getElementById("requestsBody"),
   empty: document.getElementById("emptyState"),
   resultsCount: document.getElementById("resultsCount"),
+  resultsTotal: document.getElementById("resultsTotal"),
+  loadMoreShell: document.getElementById("loadMoreShell"),
+  loadMoreBtn: document.getElementById("loadMoreBtn"),
   drawer: document.getElementById("drawer"),
   drawerOverlay: document.getElementById("drawerOverlay"),
   drawerTitle: document.getElementById("drawerTitle"),
@@ -333,6 +338,7 @@ function collectFilters() {
   if (el.fErrorsOnly.checked) filters.errors_only = "true";
   if (el.fWithTokens.checked) filters.with_tokens = "true";
   if (el.fChatCompletions.checked) filters.chat_completions_only = "true";
+  state.loadedCount = state.pageSize;
   state.filters = filters;
   renderFilterTags();
 }
@@ -348,6 +354,7 @@ function resetFilters() {
   el.fErrorsOnly.checked = false;
   el.fWithTokens.checked = false;
   el.fChatCompletions.checked = false;
+  state.loadedCount = state.pageSize;
   collectFilters();
 }
 
@@ -428,9 +435,13 @@ function updateOutputRateFromRows(items) {
 async function loadStats() {
   const hours = Number.parseInt(state.filters.since_hours || "1", 10) || 1;
   const stats = await fetchJSON(`/_monitor/stats?${queryString({ hours, ...state.filters })}`);
+  const totalMatching = hasActiveFilters()
+    ? (stats.matching_total_requests || 0)
+    : (stats.lifetime_total_requests || 0);
   el.active.textContent = fmtNum(stats.active_connections || 0);
   el.reqHour.textContent = fmtNum(Math.round((stats.requests_per_minute || 0) * 60));
-  el.totalRequests.textContent = fmtNum(hasActiveFilters() ? (stats.matching_total_requests || 0) : (stats.lifetime_total_requests || 0));
+  el.totalRequests.textContent = fmtNum(totalMatching);
+  el.resultsTotal.textContent = fmtNum(totalMatching);
   el.totalTokens.textContent = fmtNum(hasActiveFilters() ? (stats.matching_total_tokens || 0) : (stats.lifetime_total_tokens || 0));
   el.ttft.textContent = fmtMs(stats.avg_first_byte_ms || 0);
   el.errorRate.textContent = fmtPercent(stats.error_rate || 0);
@@ -449,20 +460,55 @@ async function loadModelOptions() {
 }
 
 async function loadRequests() {
+  state.loadingMore = false;
   const params = {
-    limit: state.limit,
-    offset: state.offset,
+    limit: state.loadedCount,
+    offset: 0,
     ...state.filters,
   };
   const data = await fetchJSON(`/_monitor/requests?${queryString(params)}`);
   state.latestItems = data.items || [];
+  state.hasMore = state.latestItems.length === state.loadedCount;
   renderRequests(state.latestItems);
+}
+
+async function loadMoreRequests() {
+  if (state.loadingMore || !state.hasMore) {
+    return;
+  }
+  state.loadingMore = true;
+  syncLoadMoreState();
+
+  try {
+    const params = {
+      limit: state.pageSize,
+      offset: state.latestItems.length,
+      ...state.filters,
+    };
+    const data = await fetchJSON(`/_monitor/requests?${queryString(params)}`);
+    const nextItems = data.items || [];
+    state.latestItems = state.latestItems.concat(nextItems);
+    state.loadedCount = state.latestItems.length;
+    state.hasMore = nextItems.length === state.pageSize;
+    renderRequests(state.latestItems);
+  } finally {
+    state.loadingMore = false;
+    syncLoadMoreState();
+  }
+}
+
+function syncLoadMoreState() {
+  const show = state.latestItems.length > 0 && (state.hasMore || state.loadingMore);
+  el.loadMoreShell.hidden = !show;
+  el.loadMoreBtn.disabled = state.loadingMore;
+  el.loadMoreBtn.textContent = state.loadingMore ? "Loading..." : `Load ${state.pageSize} more`;
 }
 
 function renderRequests(items) {
   el.body.innerHTML = "";
   el.resultsCount.textContent = fmtNum(items.length);
   el.empty.hidden = items.length > 0;
+  syncLoadMoreState();
 
   for (const item of items) {
     const row = document.createElement("tr");
@@ -715,6 +761,12 @@ function wireFilters() {
   el.refreshNow.addEventListener("click", () => {
     refreshAll().catch((err) => {
       setLiveState("error", `Refresh failed: ${err.message}`);
+    });
+  });
+  el.loadMoreBtn.addEventListener("click", () => {
+    loadMoreRequests().catch((err) => {
+      setLiveState("error", `Load more failed: ${err.message}`);
+      syncLoadMoreState();
     });
   });
 

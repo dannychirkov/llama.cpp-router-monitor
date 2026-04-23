@@ -706,6 +706,26 @@ select {
   max-width: 100%;
 }
 
+.load-more-shell {
+  position: relative;
+  margin-top: -1px;
+  border: 1px solid var(--line);
+  border-top: 0;
+  background: rgba(3, 5, 8, 0.96);
+}
+
+.load-more-fade {
+  pointer-events: none;
+  height: 34px;
+  background: linear-gradient(180deg, rgba(2, 4, 6, 0), rgba(2, 4, 6, 0.92));
+}
+
+.load-more-actions {
+  display: flex;
+  justify-content: center;
+  padding: 0 0 12px;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
